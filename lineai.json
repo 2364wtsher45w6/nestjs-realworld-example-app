@@ -1,5 +1,5 @@
 {
-  "branchNamePrefix" : "lineai/",
-  "scheduledUpgradesPerDay" : 1,
-  "maxOpenPrs" : 3
+  "branchNamePrefix": "lineai1/",
+  "scheduledUpgradesPerDay": 3,
+  "maxOpenPrs": 8
 }
