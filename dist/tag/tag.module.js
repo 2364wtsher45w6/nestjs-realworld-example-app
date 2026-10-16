@@ -6,6 +6,7 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.TagModule = void 0;
 const common_1 = require("@nestjs/common");
 const typeorm_1 = require("@nestjs/typeorm");
 const user_module_1 = require("../user/user.module");
@@ -16,8 +17,9 @@ let TagModule = class TagModule {
     configure(consumer) {
     }
 };
-TagModule = __decorate([
-    common_1.Module({
+exports.TagModule = TagModule;
+exports.TagModule = TagModule = __decorate([
+    (0, common_1.Module)({
         imports: [typeorm_1.TypeOrmModule.forFeature([tag_entity_1.TagEntity]), user_module_1.UserModule],
         providers: [tag_service_1.TagService],
         controllers: [
@@ -26,5 +28,4 @@ TagModule = __decorate([
         exports: []
     })
 ], TagModule);
-exports.TagModule = TagModule;
 //# sourceMappingURL=tag.module.js.map

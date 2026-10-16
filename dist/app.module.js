@@ -9,6 +9,7 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ApplicationModule = void 0;
 const common_1 = require("@nestjs/common");
 const app_controller_1 = require("./app.controller");
 const article_module_1 = require("./article/article.module");
@@ -22,8 +23,9 @@ let ApplicationModule = class ApplicationModule {
         this.connection = connection;
     }
 };
-ApplicationModule = __decorate([
-    common_1.Module({
+exports.ApplicationModule = ApplicationModule;
+exports.ApplicationModule = ApplicationModule = __decorate([
+    (0, common_1.Module)({
         imports: [
             typeorm_1.TypeOrmModule.forRoot(),
             article_module_1.ArticleModule,
@@ -38,5 +40,4 @@ ApplicationModule = __decorate([
     }),
     __metadata("design:paramtypes", [typeorm_2.Connection])
 ], ApplicationModule);
-exports.ApplicationModule = ApplicationModule;
 //# sourceMappingURL=app.module.js.map
