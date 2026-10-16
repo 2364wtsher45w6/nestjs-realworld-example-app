@@ -1,0 +1,269 @@
+# lineai-intelligence-source-scan v2
+name: Lineai Intelligence Source Scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'lineai/**'
+
+permissions:
+  contents: read
+  # packages: read lets the automatic GITHUB_TOKEN restore private GitHub
+  # Packages from this repository's own org (LIN-708).
+  packages: read
+
+jobs:
+  source-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect project type
+        id: detect
+        shell: bash
+        run: |
+          java=false
+          dotnet=false
+          javascript=false
+          if [ -f pom.xml ] || [ -x ./mvnw ] || [ -f build.gradle ] \
+              || [ -f build.gradle.kts ] || [ -x ./gradlew ]; then
+            java=true
+          fi
+          if find . -maxdepth 3 -type f \( -name '*.sln' -o -name '*.csproj' \) \
+              -print -quit | grep -q .; then
+            dotnet=true
+          fi
+          if find . -maxdepth 4 -type f -name package.json \
+              -not -path '*/node_modules/*' -print -quit | grep -q .; then
+            javascript=true
+          fi
+          java_method_filter="$(
+            find . -maxdepth 4 -type f -name pom.xml -print0 \
+              | xargs -0 -r perl -0777 -ne '
+                  # No "$" inside character classes: "$]" is a Perl variable and corrupts the class.
+                  while (/<groupId>\s*([^<]+?)\s*<\/groupId>/g) {
+                    next if $1 =~ /\$\{/;
+                    $value = $1;
+                    $value =~ s/\s+//g;
+                    print $value;
+                    exit;
+                  }'
+          )"
+          if [ -z "$java_method_filter" ]; then
+            java_source="$(find . -type f -path '*/src/main/java/*' -name '*.java' -print -quit)"
+            if [ -n "$java_source" ]; then
+              relative="${java_source#*/src/main/java/}"
+              package_path="${relative%/*}"
+              if [ "$package_path" != "$relative" ]; then
+                java_method_filter="${package_path//\//.}"
+              fi
+            fi
+          fi
+          if [ -n "$java_method_filter" ] && [[ "$java_method_filter" != *. ]]; then
+            java_method_filter="${java_method_filter}."
+          fi
+          # Every project's root namespace (RootNamespace, else AssemblyName, else the
+          # csproj name — MSBuild's own defaulting), deduplicated and space-separated.
+          # A multi-project estate has many root namespaces; taking just the first
+          # csproj's value filtered a 73-project solution down to one assembly.
+          dotnet_namespace="$(
+            find . -type f -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+              -not -path '*/packages/*' -not -path '*/node_modules/*' -print0 \
+              | xargs -0 -r perl -0777 -ne '
+                  # No "$" inside character classes: "$]" is a Perl variable and corrupts the class.
+                  my ($ns) = /<RootNamespace>\s*([^<]+?)\s*<\/RootNamespace>/;
+                  ($ns) = /<AssemblyName>\s*([^<]+?)\s*<\/AssemblyName>/ unless defined $ns && $ns !~ /\$\(/;
+                  ($ns) = $ARGV =~ m{([^/\\]+)\.csproj$} unless defined $ns && $ns !~ /\$\(/;
+                  $ns =~ s/\s+//g if defined $ns;
+                  print "$ns\n" if defined $ns && length $ns;
+                ' | sort -u | tr '\n' ' ' | sed 's/ *$//'
+          )"
+          if [ -z "$dotnet_namespace" ]; then
+            dotnet_namespace="$(
+              find . -type f -name '*.cs' -not -path '*/bin/*' -not -path '*/obj/*' \
+                -exec grep -h -m1 -E '^[[:space:]]*namespace[[:space:]]+[A-Za-z_][A-Za-z0-9_.]*' {} \; \
+                | sed -E 's/^[[:space:]]*namespace[[:space:]]+//; s/[[:space:];{].*$//' \
+                | head -n 1
+            )"
+          fi
+          if [ "$java" = true ] && [ -z "$java_method_filter" ]; then
+            echo "::error::Could not derive the required Java method filter."
+            exit 1
+          fi
+          if [ "$dotnet" = true ] && [ -z "$dotnet_namespace" ]; then
+            echo "::error::Could not derive the required .NET namespace filter."
+            exit 1
+          fi
+          echo "java=$java" >> "$GITHUB_OUTPUT"
+          echo "dotnet=$dotnet" >> "$GITHUB_OUTPUT"
+          echo "javascript=$javascript" >> "$GITHUB_OUTPUT"
+          echo "java_method_filter=$java_method_filter" >> "$GITHUB_OUTPUT"
+          echo "dotnet_namespace=$dotnet_namespace" >> "$GITHUB_OUTPUT"
+
+      - name: Lineai Java source scan
+        if: always() && steps.detect.outputs.java == 'true'
+        env:
+          LINEAI_HOST: ${{ vars.LINEAI_HOST }}
+          AGENT_UUID: ${{ vars.AGENT_UUID }}
+          AGENT_PASSWORD: ${{ secrets.AGENT_PASSWORD }}
+          JAVA_METHOD_FILTER: ${{ steps.detect.outputs.java_method_filter }}
+        run: |
+          docker run --pull always --rm \
+            --env LINEAI_HOST \
+            --env AGENT_UUID \
+            --env AGENT_PASSWORD \
+            --env JAVA_METHOD_FILTER \
+            --env SCAN_PATH_FILTER=java \
+            --env SCAN_PATH_DEPTH=-1 \
+            --volume "${{ github.workspace }}:/scan" \
+            --entrypoint /bin/bash \
+            lineaipublic.azurecr.io/lineai_source_java:latest \
+            -c 'set -euo pipefail
+                if [[ -n "${AGENT_UUID:-}" && -n "${AGENT_PASSWORD:-}" ]]; then
+                  printf "%s\n" "${AGENT_UUID}" > /sourceCape-agent-uuid
+                  printf "%s\n" "${AGENT_UUID}" > /sourceCape-agent-creds
+                  printf "%s\n" "${AGENT_PASSWORD}" >> /sourceCape-agent-creds
+                  printf "%s\n" "${AGENT_UUID}" > /jCape-agent-uuid
+                  printf "%s\n" "${AGENT_UUID}" > /jCape-agent-creds
+                  printf "%s\n" "${AGENT_PASSWORD}" >> /jCape-agent-creds
+                fi
+                method_filter_args=()
+                if [[ -n "${JAVA_METHOD_FILTER:-}" ]]; then
+                  method_filter_args=(--method-filter "${JAVA_METHOD_FILTER}")
+                fi
+                exec /opt/entrypoint.sh analyze --type FILE \
+                  --application "${{ github.event.repository.name }}" \
+                  --scan-space-name "${{ github.event.repository.html_url }}|OnboardingBaselineScanSpace" \
+                  --path /scan \
+                  "${method_filter_args[@]}" \
+                  --rescan'
+
+      - name: Configure private NuGet sources
+        if: always() && steps.detect.outputs.dotnet == 'true'
+        shell: bash
+        env:
+          LINEAI_NUGET_CONFIG: ${{ secrets.LINEAI_NUGET_CONFIG }}
+        run: |
+          # Private-registry credentials (LIN-708). Both mechanisms write the
+          # runner's user-level NuGet config so they MERGE with any repo-local
+          # nuget.config instead of replacing it; every step is best-effort so a
+          # repo without private packages restores exactly as before.
+          if ! command -v dotnet >/dev/null 2>&1; then
+            exit 0
+          fi
+          if [ -n "${LINEAI_NUGET_CONFIG:-}" ]; then
+            mkdir -p "$HOME/.nuget/NuGet"
+            printf '%s' "$LINEAI_NUGET_CONFIG" > "$HOME/.nuget/NuGet/NuGet.Config"
+            echo "Installed Lineai private-feed NuGet config."
+          fi
+          dotnet nuget add source \
+            "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --name github-org-packages --username x-access-token \
+            --password "${{ secrets.GITHUB_TOKEN }}" \
+            --store-password-in-clear-text >/dev/null 2>&1 \
+            || echo "::warning::Could not add the GitHub Packages NuGet source; same-org private packages may not restore."
+
+      - name: Restore .NET packages for the Lineai scanner
+        if: always() && steps.detect.outputs.dotnet == 'true'
+        shell: bash
+        run: |
+          if ! command -v dotnet >/dev/null 2>&1; then
+            echo "::error::No dotnet SDK on the runner; the Lineai .NET scanner needs restored packages."
+            exit 1
+          fi
+          solution="$(find . -maxdepth 3 -type f -name '*.sln' -print -quit)"
+          if [ -n "$solution" ]; then
+            dotnet restore "$solution" -p:NuGetAudit=false
+          else
+            find . -maxdepth 4 -type f -name '*.csproj' -print0 \
+              | xargs -0 -r -n1 -I{} dotnet restore {} -p:NuGetAudit=false
+          fi
+
+      - name: Lineai .NET source scan
+        if: always() && steps.detect.outputs.dotnet == 'true'
+        shell: bash
+        env:
+          LINEAI_HOST: ${{ vars.LINEAI_HOST }}
+          AGENT_UUID: ${{ vars.AGENT_UUID }}
+          AGENT_PASSWORD: ${{ secrets.AGENT_PASSWORD }}
+        run: |
+          set -o pipefail
+          namespace_args=()
+          if [ -n "${{ steps.detect.outputs.dotnet_namespace }}" ]; then
+            # Space-separated list from the detect step; --namespace accepts several values.
+            read -r -a dotnet_namespaces <<< "${{ steps.detect.outputs.dotnet_namespace }}"
+            namespace_args=(--namespace "${dotnet_namespaces[@]}")
+          fi
+          nuget_packages="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
+          mkdir -p "$nuget_packages"
+          scan_log="$(mktemp)"
+          docker run --pull always --rm \
+            --env LINEAI_HOST \
+            --env AGENT_UUID \
+            --env AGENT_PASSWORD \
+            --env NUGET_PACKAGES="$nuget_packages" \
+            --env NuGetAudit=false \
+            --env NoWarn="NU1901;NU1902;NU1903;NU1904" \
+            --env WarningsNotAsErrors="NU1901;NU1902;NU1903;NU1904" \
+            --volume "${{ github.workspace }}:/scan" \
+            --volume "$nuget_packages:$nuget_packages:ro" \
+            lineaipublic.azurecr.io/lineai_dotnet:latest \
+            analyze --rescan \
+              --application "${{ github.event.repository.name }}" \
+              --scan-space-name "${{ github.event.repository.html_url }}|OnboardingBaselineScanSpace" \
+              --source /scan \
+              "${namespace_args[@]}" 2>&1 | tee "$scan_log"
+          if grep -q -E 'MSBuild workspace failure|BackgroundService failed' "$scan_log"; then
+            echo "::error::The Lineai .NET scanner could not load the solution, so no data was uploaded."
+            exit 1
+          fi
+          # A scan that cannot reach or authenticate to the server uploads nothing
+          # but used to exit 0 — silent data loss (LIN-708 finding: a TLS trust
+          # failure ran green for weeks, and an HTTP 503 during a server restart
+          # produced "authentication failed" with exit 0). Fail loudly on those
+          # signatures too.
+          if grep -q -E 'AuthenticationException|The remote certificate is invalid|No such host is known|Connection refused|Name or service not known|CodeLogic authentication failed|Service Temporarily Unavailable' "$scan_log"; then
+            echo "::error::The Lineai .NET scanner could not reach or authenticate to the Lineai server — scan data was NOT uploaded."
+            exit 1
+          fi
+
+      - name: Lineai JavaScript/TypeScript source scan
+        if: always() && steps.detect.outputs.javascript == 'true'
+        shell: bash
+        env:
+          LINEAI_HOST: ${{ vars.LINEAI_HOST }}
+          AGENT_UUID: ${{ vars.AGENT_UUID }}
+          AGENT_PASSWORD: ${{ secrets.AGENT_PASSWORD }}
+        run: |
+          lineai_host="${LINEAI_HOST%/}"
+          if [[ "$lineai_host" != */api ]]; then
+            lineai_host="$lineai_host/api"
+          fi
+          js_scan_root="${RUNNER_TEMP}/lineai-js-source"
+          rm -rf "$js_scan_root"
+          mkdir -p "$js_scan_root"
+          trap 'rm -rf "$js_scan_root"' EXIT
+          git archive HEAD | tar -x -C "$js_scan_root"
+          while IFS= read -r -d '' generated_file; do
+            if head -n 40 "$generated_file" \
+                | grep -Eiq '(<auto-generated>|@[[:space:]]*generated)'; then
+              echo "Excluding generated source from JavaScript scan: ${generated_file#"$js_scan_root"/}"
+              rm -f "$generated_file"
+            fi
+          done < <(find "$js_scan_root" -type f \
+            \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \) -print0)
+          docker run --pull always --rm \
+            --env LINEAI_HOST="$lineai_host" \
+            --env AGENT_UUID \
+            --env AGENT_PASSWORD \
+            --volume "$js_scan_root:/scan:ro" \
+            lineaipublic.azurecr.io/lineai_javascript:latest \
+            analyze \
+              --application "${{ github.event.repository.name }}" \
+              --scan-space-name "${{ github.event.repository.html_url }}|OnboardingBaselineScanSpace" \
+              --path /scan \
+              --entrypoint-type recursive \
+              --dependency-depth 0 \
+              --rescan
