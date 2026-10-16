@@ -1,0 +1,183 @@
+# lineai-intelligence-build-feedback
+name: Lineai Intelligence Build Feedback
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-feedback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build and test
+        id: build
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          : > build.log
+          status=0
+          ran_build=false
+
+          if [ -x ./mvnw ]; then
+            ran_build=true
+            ./mvnw verify 2>&1 | tee -a build.log
+            status=$(( status | ${PIPESTATUS[0]} ))
+          elif [ -f pom.xml ]; then
+            ran_build=true
+            mvn verify 2>&1 | tee -a build.log
+            status=$(( status | ${PIPESTATUS[0]} ))
+          fi
+
+          if [ -x ./gradlew ]; then
+            ran_build=true
+            ./gradlew build 2>&1 | tee -a build.log
+            status=$(( status | ${PIPESTATUS[0]} ))
+          fi
+
+          dotnet_target="$(find . -maxdepth 2 -type f -name '*.sln' -print | sort | head -n 1)"
+          if [ -z "$dotnet_target" ]; then
+            dotnet_target="$(find . -maxdepth 3 -type f -name '*.csproj' -print | sort | head -n 1)"
+          fi
+          if [ -n "$dotnet_target" ]; then
+            ran_build=true
+            current_branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
+            if [ "$current_branch" = "lineai/bootstrap-config" ]; then
+              # MSBuild reads this as a global property; a -p: argument would split on the semicolons.
+              export WarningsNotAsErrors='NU1901;NU1902;NU1903;NU1904'
+            fi
+            dotnet test "$dotnet_target" 2>&1 | tee -a build.log
+            status=$(( status | ${PIPESTATUS[0]} ))
+          fi
+
+          if [ -f package.json ]; then
+            ran_build=true
+            package_manager="$(node -p "require('./package.json').packageManager?.split('@')[0] || ''")"
+            if [ -z "$package_manager" ]; then
+              if [ -f package-lock.json ]; then
+                # Prefer npm when legacy repositories contain mixed npm and Yarn lockfiles.
+                package_manager=npm
+              elif [ -f pnpm-lock.yaml ]; then
+                package_manager=pnpm
+              elif [ -f yarn.lock ]; then
+                package_manager=yarn
+              else
+                package_manager=npm
+              fi
+            fi
+
+            install_status=0
+            case "$package_manager" in
+              pnpm)
+                corepack enable 2>&1 | tee -a build.log
+                install_status=${PIPESTATUS[0]}
+                if [ "$install_status" -eq 0 ]; then
+                  pnpm install --frozen-lockfile 2>&1 | tee -a build.log
+                  install_status=${PIPESTATUS[0]}
+                fi
+                ;;
+              yarn)
+                corepack enable 2>&1 | tee -a build.log
+                install_status=${PIPESTATUS[0]}
+                if [ "$install_status" -eq 0 ]; then
+                  yarn install --frozen-lockfile 2>&1 | tee -a build.log
+                  install_status=${PIPESTATUS[0]}
+                fi
+                ;;
+              npm)
+                if [ -f package-lock.json ]; then
+                  npm ci 2>&1 | tee -a build.log
+                else
+                  npm install 2>&1 | tee -a build.log
+                fi
+                install_status=${PIPESTATUS[0]}
+                ;;
+              *)
+                echo "Unsupported package manager: $package_manager" | tee -a build.log
+                install_status=1
+                ;;
+            esac
+            status=$(( status | install_status ))
+
+            # Missing dependencies obscure the real install error with follow-on command failures.
+            if [ "$install_status" -eq 0 ]; then
+              case "$package_manager" in
+                pnpm)
+                  if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+                    pnpm test 2>&1 | tee -a build.log
+                    status=$(( status | ${PIPESTATUS[0]} ))
+                  fi
+                  if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+                    pnpm build 2>&1 | tee -a build.log
+                    status=$(( status | ${PIPESTATUS[0]} ))
+                  fi
+                  ;;
+                yarn)
+                  if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+                    yarn test 2>&1 | tee -a build.log
+                    status=$(( status | ${PIPESTATUS[0]} ))
+                  fi
+                  if node -e "process.exit(require('./package.json').scripts?.build ? 0 : 1)"; then
+                    yarn build 2>&1 | tee -a build.log
+                    status=$(( status | ${PIPESTATUS[0]} ))
+                  fi
+                  ;;
+                npm)
+                  npm test --if-present 2>&1 | tee -a build.log
+                  status=$(( status | ${PIPESTATUS[0]} ))
+                  npm run build --if-present 2>&1 | tee -a build.log
+                  status=$(( status | ${PIPESTATUS[0]} ))
+                  ;;
+              esac
+            fi
+          fi
+
+          if [ "$ran_build" = false ]; then
+            echo "No supported build manifest found." | tee -a build.log
+            status=1
+          fi
+          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Lineai build.log exists
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f build.log ]; then
+            echo "No teed build.log found; a step may have failed before log capture." > build.log
+          fi
+
+      - name: Send build result to Lineai
+        if: always()
+        uses: lineai-intelligence/lineai-send-build-info-github-action@v1.0.3
+        with:
+          lineai_host: ${{ vars.LINEAI_HOST }}
+          agent_uuid: ${{ vars.AGENT_UUID }}
+          agent_password: ${{ secrets.AGENT_PASSWORD }}
+          scan_path: /github/workspace
+          job_name: ${{ github.repository }} / ${{ github.workflow }}
+          build_number: ${{ github.run_number }}
+          build_status: ${{ steps.build.outputs.exit_code == '0' && 'SUCCESS' || 'FAILURE' }}
+          pipeline_system: GitHub Actions
+          log_file: /github/workspace/build.log
+
+      - name: Preserve build status
+        if: always()
+        shell: bash
+        run: exit "${{ steps.build.outputs.exit_code || '1' }}"
