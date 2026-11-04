@@ -1,15 +1,16 @@
-import { Test } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import { TagController } from './tag.controller';
 import { TagService } from './tag.service';
 import {TypeOrmModule} from "@nestjs/typeorm";
 import {TagEntity} from "./tag.entity";
 
 describe('TagController', () => {
+  let module: TestingModule;
   let tagController: TagController;
   let tagService: TagService;
 
   beforeEach(async () => {
-    const module = await Test.createTestingModule({
+    module = await Test.createTestingModule({
       imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],
       controllers: [TagController],
       providers: [TagService],
@@ -17,6 +18,10 @@ describe('TagController', () => {
 
     tagService = module.get<TagService>(TagService);
     tagController = module.get<TagController>(TagController);
+  });
+
+  afterEach(async () => {
+    await module.close();
   });
 
   describe('findAll', () => {
