@@ -53,7 +53,7 @@
     "deep-extend": ">=0.5.1",
     "extend": ">=3.0.2",
     "jest": "^25.5.3",
-    "nodemon": "^1.19.4",
+    "nodemon": "^3.1.14",
     "supertest": "^3.4.2",
     "ts-jest": "^25.4.0",
     "ts-node": "^8.9.1"
