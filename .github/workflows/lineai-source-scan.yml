@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   source-scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -109,6 +109,21 @@ jobs:
           echo "javascript=$javascript" >> "$GITHUB_OUTPUT"
           echo "java_method_filter=$java_method_filter" >> "$GITHUB_OUTPUT"
           echo "dotnet_namespace=$dotnet_namespace" >> "$GITHUB_OUTPUT"
+
+      # Lab adaptation (prodsim-tng docs/github-sim.md, Recipe A): the lab tenant serves a
+      # chain from its private CA, whose self-signed root the runner host has installed.
+      - name: Prepare Lineai lab CA bundle
+        if: always()
+        shell: bash
+        run: |
+          bundle="${RUNNER_TEMP}/lineai-ca.pem"
+          cp /usr/local/share/ca-certificates/prodsim-tng-local-ca.crt "$bundle"
+          subject="$(openssl x509 -in "$bundle" -noout -subject | sed 's/^subject= *//')"
+          issuer="$(openssl x509 -in "$bundle" -noout -issuer | sed 's/^issuer= *//')"
+          if [ "$subject" != "$issuer" ]; then
+            echo "::error::$bundle holds no self-signed root; the scanners' TLS check would fail."
+            exit 1
+          fi
 
       - name: Lineai Java source scan
         if: always() && steps.detect.outputs.java == 'true'
@@ -266,6 +281,8 @@ jobs:
             --env LINEAI_HOST="$lineai_host" \
             --env AGENT_UUID \
             --env AGENT_PASSWORD \
+            --env NODE_EXTRA_CA_CERTS=/lineai-ca.pem \
+            --volume "${RUNNER_TEMP}/lineai-ca.pem:/lineai-ca.pem:ro" \
             --volume "$js_scan_root:/scan:ro" \
             lineaipublic.azurecr.io/lineai_javascript:latest \
             analyze \
