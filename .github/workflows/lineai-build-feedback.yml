@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build-feedback:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -163,9 +163,26 @@ jobs:
             echo "No teed build.log found; a step may have failed before log capture." > build.log
           fi
 
+      # Lab adaptation (prodsim-tng docs/github-sim.md, Recipe A): the lab tenant serves a
+      # chain from its private CA, whose self-signed root the runner host has installed.
+      - name: Prepare Lineai lab CA bundle
+        if: always()
+        shell: bash
+        run: |
+          bundle="${{ github.workspace }}/.lineai-ca.pem"
+          cp /usr/local/share/ca-certificates/prodsim-tng-local-ca.crt "$bundle"
+          subject="$(openssl x509 -in "$bundle" -noout -subject | sed 's/^subject= *//')"
+          issuer="$(openssl x509 -in "$bundle" -noout -issuer | sed 's/^issuer= *//')"
+          if [ "$subject" != "$issuer" ]; then
+            echo "::error::$bundle holds no self-signed root; the scanners' TLS check would fail."
+            exit 1
+          fi
+
       - name: Send build result to Lineai
         if: always()
         uses: lineai-intelligence/lineai-send-build-info-github-action@v1.0.3
+        env:
+          CURL_CA_BUNDLE: /github/workspace/.lineai-ca.pem
         with:
           lineai_host: ${{ vars.LINEAI_HOST }}
           agent_uuid: ${{ vars.AGENT_UUID }}
