@@ -1,12 +1,20 @@
-# lineai-intelligence-source-scan v2
+# lineai-intelligence-source-scan v4
 name: Lineai Intelligence Source Scan
 
+# LIN-944: the Lineai knowledge graph is the repository's stable mainline, not an in-flight
+# pull-request head. The scan runs once a change has landed on the default branch; pull
+# requests are built by lineai-build-feedback.yml but never scanned. workflow_dispatch is
+# for an operator who wants a fresh scan of the default branch.
 on:
-  pull_request:
   push:
     branches:
       - master
-      - 'lineai/**'
+  workflow_dispatch:
+
+# A newer mainline push supersedes a scan of an older commit that is still running.
+concurrency:
+  group: lineai-source-scan-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
