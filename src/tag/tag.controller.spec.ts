@@ -1,7 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { TagController } from './tag.controller';
 import { TagService } from './tag.service';
-import {TypeOrmModule} from "@nestjs/typeorm";
 import {TagEntity} from "./tag.entity";
 
 describe('TagController', () => {
@@ -10,9 +9,13 @@ describe('TagController', () => {
 
   beforeEach(async () => {
     const module = await Test.createTestingModule({
-      imports: [TypeOrmModule.forRoot(), TypeOrmModule.forFeature([TagEntity])],
       controllers: [TagController],
-      providers: [TagService],
+      providers: [
+        {
+          provide: TagService,
+          useValue: { findAll: jest.fn() },
+        },
+      ],
     }).compile();
 
     tagService = module.get<TagService>(TagService);
